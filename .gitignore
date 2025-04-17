@@ -1,19 +1,22 @@
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env/
+.venv/
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
-.env
-
-# VS Code
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
 
 # 專案特定
 *.wav
 *.mp3
 *.srt
-temp_files/
+temp/

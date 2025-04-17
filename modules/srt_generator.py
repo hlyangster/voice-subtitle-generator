@@ -3,8 +3,8 @@ import os
 import re
 import tempfile
 from typing import List, Tuple, Optional, Dict
-import openai
 from pydub import AudioSegment
+from modules.openai_utils import get_openai_client  # 使用統一的客戶端獲取函數
 
 class SRTGenerator:
     """
@@ -36,7 +36,7 @@ class SRTGenerator:
             print(f"獲取音頻長度失敗: {str(e)}")
             return 0.0
     
-    def transcribe(self, file_path: str, api_key: str, language: str = "zh") -> str:
+    def transcribe(self, file_path: str, api_key: str, language: str = "zh", **kwargs) -> str:
         """
         使用Whisper API轉錄單個音頻文件
         
@@ -48,10 +48,14 @@ class SRTGenerator:
         Returns:
             SRT格式的轉錄結果
         """
-        # 設置API金鑰
-        client = openai.OpenAI(api_key=api_key)
-        
         try:
+            # 導入新版 OpenAI 客戶端
+            import openai
+            
+            # 非常簡單直接的初始化方式，只傳遞 api_key
+            client = openai.OpenAI(api_key=api_key)
+            
+            # 打開音頻文件並調用API
             with open(file_path, "rb") as audio_file:
                 response = client.audio.transcriptions.create(
                     model="whisper-1",
@@ -60,8 +64,8 @@ class SRTGenerator:
                     language=language
                 )
             
-            # 返回SRT格式的內容
-            return response
+            # 返回結果
+            return str(response)
         
         except Exception as e:
             error_msg = f"轉錄失敗: {str(e)}"

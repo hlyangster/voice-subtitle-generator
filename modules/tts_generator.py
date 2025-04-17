@@ -8,9 +8,15 @@ import tempfile
 from pathlib import Path
 import time
 import shutil
+import logging
 
 # 導入全局配置
 from modules import HAILUO_GROUP_ID, TTS_VOICES, TTS_EMOTIONS, DEFAULT_PRONUNCIATION_DICT, AUDIO_SETTINGS
+logging.basicConfig(
+    filename='tts_debug.log',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 class TTSGenerationError(Exception):
     """TTS 生成過程中的錯誤"""
@@ -82,22 +88,15 @@ class TTSGenerator:
                 pronunciation_dict["tone"] = pronunciation_dict["tone"] + entries
         
         return pronunciation_dict
-    
+
     def generate_speech(self, text, voice_name="訓練長", emotion="neutral", 
                        speed=1.0, custom_pronunciation=None, progress_callback=None):
-        """生成語音
+        """生成語音"""
+        # 首先測試 API 連接
+        print("開始 API 連接測試...")
+        if not self.test_api_connection():
+            raise TTSGenerationError("無法連接到 Hailuo API，請檢查網絡和 API 密鑰")
         
-        Args:
-            text: 要轉換為語音的文本，使用 "---" 作為分隔符分隔多個段落
-            voice_name: 語音名稱，必須是 VOICE_ID_MAP 中的一個
-            emotion: 情緒，必須是 EMOTIONS 中的一個
-            speed: 語速，範圍 0.5-2.0
-            custom_pronunciation: 用戶自定義發音詞條，格式為字符串，多個詞條用逗號分隔
-            progress_callback: 進度回調函數，接收完成百分比作為參數
-            
-        Returns:
-            tuple: (生成的MP3文件列表, 壓縮文件路徑)
-        """
         # 檢查參數
         if voice_name not in self.VOICE_ID_MAP:
             raise TTSGenerationError(f"無效的語音名稱: {voice_name}")
@@ -114,9 +113,6 @@ class TTSGenerator:
         voice_settings["speed"] = speed
         voice_settings["emotion"] = emotion
         
-        # 合併用戶自定義發音字典
-        pronunciation_dict = self.merge_pronunciation_dict(custom_pronunciation)
-        
         # 清理輸出目錄中的舊文件
         for file in self.output_dir.glob("*.mp3"):
             os.remove(file)
@@ -124,6 +120,11 @@ class TTSGenerator:
         # 分割文本
         segments = text.split("---")
         segments = [seg.strip() for seg in segments if seg.strip()]
+        
+        # 輸出段落資訊以便調試
+        print(f"文本被分割為 {len(segments)} 個段落")
+        for i, segment in enumerate(segments):
+            print(f"段落 {i+1} ({len(segment)} 字符): {segment[:50]}...")
         
         # 生成每個段落的語音
         mp3_files = []
@@ -136,22 +137,43 @@ class TTSGenerator:
                         progress = int((i / len(segments)) * 100)
                         progress_callback(progress)
                     
+                    print(f"\n開始處理段落 {i+1}/{len(segments)}")
+                    
                     # 生成MP3文件名
                     mp3_filename = self.output_dir / f"{str(i+1).zfill(2)}.mp3"
                     
                     # 調用API生成語音
-                    success = self._text_to_speech(
+                    print(f"呼叫 API 生成語音...")
+                    success = self.call_tts_api(
                         segment, 
                         voice_settings, 
                         self.DEFAULT_AUDIO_SETTINGS, 
-                        pronunciation_dict, 
+                        {}, # 空字典，已停用發音字典功能
                         mp3_filename
                     )
                     
                     if success:
+                        print(f"段落 {i+1} 語音生成成功")
                         mp3_files.append(mp3_filename)
                         zipf.write(mp3_filename, mp3_filename.name)
                     else:
+                        # 嘗試使用更簡短的文本
+                        if len(segment) > 100:
+                            short_segment = segment[:100] + "..."
+                            print(f"嘗試使用縮短的段落文本...")
+                            success = self.call_tts_api(
+                                short_segment,
+                                voice_settings,
+                                self.DEFAULT_AUDIO_SETTINGS,
+                                {},
+                                mp3_filename
+                            )
+                            if success:
+                                print(f"使用縮短文本成功生成語音")
+                                mp3_files.append(mp3_filename)
+                                zipf.write(mp3_filename, mp3_filename.name)
+                                continue
+                        
                         raise TTSGenerationError(f"無法生成語音: 段落 {i+1}")
                 
                 # 完成
@@ -168,66 +190,159 @@ class TTSGenerator:
                 os.remove(zip_path)
             raise TTSGenerationError(f"語音生成失敗: {str(e)}")
     
-    def _text_to_speech(self, text, voice_settings, audio_settings, pronunciation_dict, output_filename):
-        """調用 Hailuo API 進行文本到語音的轉換
-        
-        Args:
-            text: 要轉換的文本
-            voice_settings: 語音設定
-            audio_settings: 音頻設定
-            pronunciation_dict: 發音字典
-            output_filename: 輸出文件名
+    def call_tts_api(self, text, voice_settings, audio_settings, pronunciation_dict, output_filename):
+        """調用 Hailuo API 進行文本到語音的轉換"""
+        url = f"https://api.minimaxi.chat/v1/t2a_v2?GroupId={self.group_id}"
+        headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {self.api_key}"
+        }
+    
+        # 準備請求數據（已停用發音字典）
+        data = {
+        "model": "speech-01-hd",
+        "text": text,
+        "stream": False,
+        "voice_setting": voice_settings,
+        "audio_setting": audio_settings
+        }
+    
+        # 輸出詳細請求資訊以供調試
+        print(f"請求 URL: {url}")
+        print(f"請求標頭: {headers}")
+        print(f"請求資料: {json.dumps(data, ensure_ascii=False, indent=2)}")
+    
+        try:
+            # 發送請求
+            response = requests.post(url, headers=headers, json=data)
             
-        Returns:
-            bool: 是否成功
-        """
+            # 詳細記錄響應
+            print(f"狀態碼: {response.status_code}")
+            print(f"響應標頭: {response.headers}")
+            
+            # 嘗試獲取並記錄響應內容
+            try:
+                response_data = response.json()
+                print(f"響應資料: {json.dumps(response_data, ensure_ascii=False, indent=2)}")
+            except json.JSONDecodeError:
+                print(f"無法解析 JSON 響應: {response.text}")
+            
+            # 檢查狀態碼
+            response.raise_for_status()
+            
+            # 確認存在適當的響應結構
+            if "data" in response_data and "audio" in response_data["data"]:
+                hex_audio = response_data["data"]["audio"]
+                audio_data = bytes.fromhex(hex_audio)
+                
+                with open(output_filename, 'wb') as f:
+                    f.write(audio_data)
+                return True
+            else:
+                print(f"API 回應缺少音訊資料: {response_data}")
+                return False
+        
+        except requests.exceptions.RequestException as e:
+            print(f"請求錯誤: {e}")
+            if hasattr(e, 'response') and e.response:
+                print(f"錯誤響應: {e.response.text}")
+            return False
+        except Exception as e:
+            print(f"文本到語音轉換失敗: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return False    
+            
+    def test_api_connection(self):
+        """測試 API 連接，返回是否可連接"""
         url = f"https://api.minimaxi.chat/v1/t2a_v2?GroupId={self.group_id}"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
+        
+        # 最簡單的測試請求
         data = {
+            "model": "speech-01-hd",
+            "text": "測試連接",
+            "stream": False,
+            "voice_setting": self.DEFAULT_VOICE_SETTINGS,
+            "audio_setting": self.DEFAULT_AUDIO_SETTINGS
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=data)
+            print(f"測試連接狀態碼: {response.status_code}")
+            print(f"測試連接響應: {response.text}")
+            
+            return response.status_code == 200
+        except Exception as e:
+            print(f"API 連接測試失敗: {e}")
+            return False    
+    
+    def _text_to_speech(self, text, voice_settings, audio_settings, pronunciation_dict, output_filename):
+        """調用 Hailuo API 進行文本到語音的轉換"""
+        url = f"https://api.minimaxi.chat/v1/t2a_v2?GroupId={self.group_id}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        
+        # 創建一個不含發音字典的請求版本進行測試
+        basic_data = {
             "model": "speech-01-hd",
             "text": text,
             "stream": False,
             "voice_setting": voice_settings,
-            "audio_setting": audio_settings,
-            "pronunciation_dict": pronunciation_dict
+            "audio_setting": audio_settings
         }
         
-        try:
-            # 嘗試最多3次
-            for attempt in range(3):
-                try:
-                    json_data = json.dumps(data, ensure_ascii=False)
-                    response = requests.post(url, headers=headers, data=json_data, stream=True)
-                    response.raise_for_status()
-                    
-                    response_data = response.json()
-                    
-                    if "data" in response_data and "audio" in response_data["data"]:
-                        hex_audio = response_data["data"]["audio"]
-                        audio_data = bytes.fromhex(hex_audio)  # 解碼 hex 音訊資料
-                        
-                        with open(output_filename, 'wb') as f:
-                            f.write(audio_data)
-                        return True
-                    else:
-                        print(f"API 回應缺少音訊資料: {response_data}")
-                        # 如果不是最後一次嘗試，則等待後重試
-                        if attempt < 2:
-                            time.sleep(1)
-                        continue
-                
-                except requests.exceptions.RequestException as e:
-                    print(f"請求錯誤 (嘗試 {attempt+1}/3): {e}")
-                    if attempt < 2:
-                        time.sleep(1)
-                    continue
-            
-            # 所有嘗試都失敗
-            return False
+        # 完整版本（包含發音字典）
+        full_data = basic_data.copy()
+        full_data["pronunciation_dict"] = pronunciation_dict
         
+        try:
+            # 首先嘗試完整版本
+            try:
+                json_data = json.dumps(full_data, ensure_ascii=False)
+                print(f"完整數據 JSON 長度：{len(json_data)}")
+                
+                # 測試 JSON 是否有效
+                json.loads(json_data)
+                
+                data_to_use = full_data
+                print("使用完整數據（含發音字典）")
+            except json.JSONDecodeError as e:
+                print(f"完整數據 JSON 序列化錯誤: {e}")
+                print(f"嘗試使用不含發音字典的基礎數據")
+                
+                # 改用不含發音字典的基礎版本
+                json_data = json.dumps(basic_data, ensure_ascii=False)
+                data_to_use = basic_data
+            
+            # 使用確認有效的數據發送請求
+            final_json = json.dumps(data_to_use, ensure_ascii=False)
+            response = requests.post(url, headers=headers, data=final_json, stream=True)
+            response.raise_for_status()
+            
+            response_data = response.json()
+            
+            if "data" in response_data and "audio" in response_data["data"]:
+                hex_audio = response_data["data"]["audio"]
+                audio_data = bytes.fromhex(hex_audio)
+                
+                with open(output_filename, 'wb') as f:
+                    f.write(audio_data)
+                return True
+            else:
+                print(f"API 回應缺少音訊資料: {response_data}")
+                return False
+        
+        except requests.exceptions.RequestException as e:
+            print(f"請求錯誤: {e}")
+            return False
         except Exception as e:
             print(f"文本到語音轉換失敗: {e}")
             return False
+    
+    
